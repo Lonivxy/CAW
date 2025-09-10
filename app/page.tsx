@@ -1631,7 +1631,9 @@ export default function ChatApp() {
               <div className="flex items-center gap-3 mb-4">
                 <Avatar className="h-10 w-10">
                   <AvatarFallback style={{ backgroundColor: auth.currentUser?.color || "#ea580c" }}>
-                    {auth.currentUser?.displayName.slice(0, 2).toUpperCase()}
+                    {auth.currentUser?.displayName
+                      ? auth.currentUser.displayName.slice(0, 2).toUpperCase()
+                      : "??"}
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex-1 min-w-0">

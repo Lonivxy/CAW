@@ -51,9 +51,47 @@ const server = http.createServer((req, res) => {
 // Create WebSocket server
 const wss = new WebSocket.Server({ server })
 
-// Store rooms and users
-const rooms = new Map()
+
+// SQLite database
+const db = require("./lib/db")
+
+// Store in-memory connections only
 const userConnections = new Map()
+
+// Helper: get or create room in DB
+function getOrCreateRoom(roomId, name = null) {
+  let room = db.prepare("SELECT * FROM rooms WHERE id = ?").get(roomId)
+  if (!room) {
+    db.prepare("INSERT INTO rooms (id, name) VALUES (?, ?)").run(roomId, name || roomId)
+    room = db.prepare("SELECT * FROM rooms WHERE id = ?").get(roomId)
+  }
+  return room
+}
+
+// Helper: get user from DB
+function getUser(userId) {
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId)
+}
+
+// Helper: create or update user in DB
+function upsertUser(user) {
+  db.prepare(`INSERT INTO users (id, username, displayName, color) VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET username=excluded.username, displayName=excluded.displayName, color=excluded.color`).run(
+    user.id, user.username, user.displayName, user.color
+  )
+}
+
+// Helper: save message in DB
+function saveMessage(msg) {
+  db.prepare("INSERT INTO messages (id, roomId, userId, content, timestamp) VALUES (?, ?, ?, ?, ?)").run(
+    msg.id, msg.roomId, msg.userId, msg.content, msg.timestamp
+  )
+}
+
+// Helper: get messages for a room
+function getMessages(roomId, limit = 50) {
+  return db.prepare("SELECT * FROM messages WHERE roomId = ? ORDER BY timestamp DESC LIMIT ?").all(roomId, limit).reverse()
+}
 
 // Get local IP address
 function getLocalIP() {
@@ -118,50 +156,33 @@ wss.on("connection", (ws, req) => {
 function handleJoinRoom(ws, data) {
   const { roomId, user } = data
 
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, {
-      id: roomId,
-      messages: [],
-      users: [],
-    })
-  }
+  // Ensure room and user exist in DB
+  getOrCreateRoom(roomId)
+  upsertUser(user)
 
-  const room = rooms.get(roomId)
-
-  // Add user to room
-  const userWithConnection = {
-    ...user,
-    connectionId: ws.connectionId,
-    lastSeen: new Date().toISOString(),
-    isOnline: true,
-  }
-
-  // Remove existing user if reconnecting
-  room.users = room.users.filter((u) => u.id !== user.id)
-  room.users.push(userWithConnection)
-
-  // Store user connection
+  // Store user connection (in-memory only)
   userConnections.set(ws.connectionId, { ws, roomId, userId: user.id })
 
-  // Send room data to user
+  // Send room data to user (fetch messages from DB)
+  const messages = getMessages(roomId)
   ws.send(
     JSON.stringify({
       type: "room_joined",
-      room: room,
-    }),
+      room: { id: roomId, messages },
+    })
   )
 
-  // Broadcast user joined to others
+  // Broadcast user joined to others (in-memory presence only)
   broadcastToRoom(
     roomId,
     {
       type: "user_joined",
-      user: userWithConnection,
+      user: { ...user, connectionId: ws.connectionId, lastSeen: new Date().toISOString(), isOnline: true },
     },
     ws.connectionId,
   )
 
-  console.log(`User ${user.name} joined room ${roomId}`)
+  console.log(`User ${user.displayName || user.username || user.id} joined room ${roomId}`)
 }
 
 function handleLeaveRoom(ws, data) {
@@ -169,17 +190,11 @@ function handleLeaveRoom(ws, data) {
   if (!userConnection) return
 
   const { roomId, userId } = userConnection
-  const room = rooms.get(roomId)
-
-  if (room) {
-    room.users = room.users.filter((u) => u.id !== userId)
-
-    broadcastToRoom(roomId, {
-      type: "user_left",
-      userId: userId,
-    })
-  }
-
+  // Only update in-memory presence, not DB
+  broadcastToRoom(roomId, {
+    type: "user_left",
+    userId: userId,
+  })
   userConnections.delete(ws.connectionId)
   console.log(`User left room ${roomId}`)
 }
@@ -208,27 +223,16 @@ function handleSendMessage(ws, data) {
 }
 
 function handleUpdatePresence(ws, data) {
-  const { roomId, user } = data
-  const room = rooms.get(roomId)
+  const { roomId, message } = data
 
-  if (!room) return
+  // Save message to DB
+  saveMessage(message)
 
-  // Update user presence
-  const userIndex = room.users.findIndex((u) => u.id === user.id)
-  if (userIndex >= 0) {
-    room.users[userIndex] = {
-      ...room.users[userIndex],
-      ...user,
-      lastSeen: new Date().toISOString(),
-      isOnline: true,
-    }
-
-    broadcastToRoom(roomId, {
-      type: "presence_update",
-      user: room.users[userIndex],
-    })
-  }
-}
+  // Broadcast message to all users in room
+  broadcastToRoom(roomId, {
+    type: "new_message",
+    message,
+  })
 
 function handleGetRoomData(ws, data) {
   const { roomId } = data
@@ -274,4 +278,4 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("💡 Share the network URL with friends to chat!")
   console.log("")
   console.log("Press Ctrl+C to stop the server")
-})
+}
