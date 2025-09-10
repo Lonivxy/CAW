@@ -1,5 +1,13 @@
 "use client"
 
+// Polyfill for crypto.randomUUID for browsers that don't support it
+function uuidv4() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8)
+    return v.toString(16)
+  })
+}
+
 import type React from "react"
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
@@ -210,8 +218,9 @@ export default function ChatApp() {
 
   const register = async () => {
     try {
+      const existingUsers = JSON.parse(localStorage.getItem("users") || "[]")
       const newUser: AuthUser = {
-        id: crypto.randomUUID(),
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : uuidv4(),
         username: authForm.username,
         displayName: authForm.displayName || authForm.username,
         email: authForm.email,
@@ -227,8 +236,7 @@ export default function ChatApp() {
         joinedAt: new Date().toISOString(),
       }
 
-      // Save user to localStorage (in real app, this would be a database)
-      const existingUsers = JSON.parse(localStorage.getItem("users") || "[]")
+  // Save user to localStorage (in real app, this would be a database)
 
       // Check if username already exists
       if (existingUsers.find((u: AuthUser) => u.username === authForm.username)) {
@@ -245,8 +253,7 @@ export default function ChatApp() {
         currentUser: newUser,
         isLoading: false,
       })
-      setShowAuthModal(false)
-      setConnectionStatus("connected")
+  setShowAuthModal(false)
     } catch (error) {
       console.error("Registration failed:", error)
     }
@@ -263,7 +270,6 @@ export default function ChatApp() {
       }
 
       // Update user online status
-      user.isOnline = true
       user.lastSeen = new Date().toISOString()
 
       const updatedUsers = existingUsers.map((u: AuthUser) => (u.id === user.id ? user : u))
@@ -281,10 +287,8 @@ export default function ChatApp() {
       console.error("Login failed:", error)
     }
   }
-
   const logout = () => {
     if (auth.currentUser) {
-      // Update user offline status
       const existingUsers = JSON.parse(localStorage.getItem("users") || "[]")
       const updatedUsers = existingUsers.map((u: AuthUser) =>
         u.id === auth.currentUser!.id ? { ...u, isOnline: false, lastSeen: new Date().toISOString() } : u,
@@ -807,7 +811,7 @@ export default function ChatApp() {
       voiceUrl: voiceUrl,
       voiceDuration: duration,
       chatType: chatType,
-      dmRecipient: chatType === "dm" ? selectedDmUser : undefined,
+  dmRecipient: chatType === "dm" && selectedDmUser ? selectedDmUser : undefined,
     }
 
     try {
@@ -834,7 +838,7 @@ export default function ChatApp() {
     }
 
     const newMessage: Message = {
-      id: crypto.randomUUID(),
+      id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : uuidv4(),
       text: selectedFile ? `Shared file: ${selectedFile.name}` : currentMessage,
       sender: auth.currentUser.displayName,
       senderUsername: auth.currentUser.username,
@@ -843,7 +847,7 @@ export default function ChatApp() {
       fileName: selectedFile?.name,
       fileUrl: selectedFile ? URL.createObjectURL(selectedFile) : undefined,
       chatType: chatType,
-      dmRecipient: chatType === "dm" ? selectedDmUser : undefined,
+  dmRecipient: chatType === "dm" && selectedDmUser ? selectedDmUser : undefined,
       voiceUrl: undefined,
       voiceDuration: undefined,
     }
@@ -1940,8 +1944,16 @@ export default function ChatApp() {
                                 >
                                   {getCategoryInfo(post.category).name}
                                 </Badge>
-                                {post.isPinned && <Badge variant="secondary">📌 Pinned</Badge>}
-                                {post.isLocked && <Badge variant="destructive">🔒 Locked</Badge>}
+                                {post.isPinned && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    📌
+                                  </Badge>
+                                )}
+                                {post.isLocked && (
+                                  <Badge variant="destructive" className="text-xs">
+                                    🔒
+                                  </Badge>
+                                )}
                               </div>
                               <h3 className="font-semibold text-lg mb-2 line-clamp-1">{post.title}</h3>
                               <p className="text-muted-foreground text-sm line-clamp-2 mb-3">{post.content}</p>

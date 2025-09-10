@@ -139,14 +139,8 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     console.log("Client disconnected")
-    // Clean up user from all rooms
-    for (const [roomId, room] of rooms.entries()) {
-      room.users = room.users.filter((user) => user.connectionId !== ws.connectionId)
-      broadcastToRoom(roomId, {
-        type: "room_update",
-        room: room,
-      })
-    }
+  // Clean up user presence (in-memory only)
+  userConnections.delete(ws.connectionId)
   })
 
   // Assign connection ID
@@ -201,29 +195,6 @@ function handleLeaveRoom(ws, data) {
 
 function handleSendMessage(ws, data) {
   const { roomId, message } = data
-  const room = rooms.get(roomId)
-
-  if (!room) return
-
-  // Add message to room
-  room.messages.push(message)
-
-  // Keep only last 100 messages
-  if (room.messages.length > 100) {
-    room.messages = room.messages.slice(-100)
-  }
-
-  // Broadcast message to all users in room
-  broadcastToRoom(roomId, {
-    type: "new_message",
-    message: message,
-  })
-
-  console.log(`Message sent in room ${roomId}: ${message.text}`)
-}
-
-function handleUpdatePresence(ws, data) {
-  const { roomId, message } = data
 
   // Save message to DB
   saveMessage(message)
@@ -234,33 +205,33 @@ function handleUpdatePresence(ws, data) {
     message,
   })
 
+  console.log(`Message sent in room ${roomId}: ${message.content}`)
+}
+
+function handleUpdatePresence(ws, data) {
+  // Presence logic can be implemented here if needed
+  // Currently a placeholder
+}
+
 function handleGetRoomData(ws, data) {
   const { roomId } = data
-  const room = rooms.get(roomId)
-
-  if (room) {
-    ws.send(
-      JSON.stringify({
-        type: "room_data",
-        room: room,
-      }),
-    )
-  }
+  // Fetch messages from DB
+  const messages = getMessages(roomId)
+  ws.send(
+    JSON.stringify({
+      type: "room_data",
+      room: { id: roomId, messages },
+    })
+  )
 }
 
 function broadcastToRoom(roomId, message, excludeConnectionId = null) {
-  const room = rooms.get(roomId)
-  if (!room) return
-
-  room.users.forEach((user) => {
-    if (user.connectionId !== excludeConnectionId) {
-      for (const [connectionId, connection] of userConnections.entries()) {
-        if (connectionId === user.connectionId && connection.ws.readyState === WebSocket.OPEN) {
-          connection.ws.send(JSON.stringify(message))
-        }
-      }
+  // Broadcast to all connected users in the room (in-memory presence only)
+  for (const [connectionId, connection] of userConnections.entries()) {
+    if (connection.roomId === roomId && connectionId !== excludeConnectionId && connection.ws.readyState === WebSocket.OPEN) {
+      connection.ws.send(JSON.stringify(message))
     }
-  })
+  }
 }
 
 const PORT = process.env.PORT || 3001
@@ -278,4 +249,4 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("💡 Share the network URL with friends to chat!")
   console.log("")
   console.log("Press Ctrl+C to stop the server")
-}
+})
