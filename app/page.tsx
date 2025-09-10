@@ -1,37 +1,6 @@
 "use client"
 
-import type React from "react"
-import { useState, useEffect, useRef, useCallback } from "react"
-
-// Polyfill for crypto.randomUUID for browsers that don't support it
-function uuidv4() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8)
-    return v.toString(16)
-  })
-}
-
-// Helper functions for local storage
-const saveToLocalStorage = (key: string, data: any) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(data))
-    return true
-  } catch (error) {
-    console.error(`Error saving to localStorage (${key}):`, error)
-    return false
-  }
-}
-
-const getFromLocalStorage = (key: string, defaultValue: any = null) => {
-  try {
-    const item = localStorage.getItem(key)
-    return item ? JSON.parse(item) : defaultValue
-  } catch (error) {
-    console.error(`Error reading from localStorage (${key}):`, error)
-    return defaultValue
-  }
-}
-import { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
@@ -48,6 +17,659 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Shield, Crown } from "lucide-react"
+
+// Types
+interface Message {
+  id: string
+  text: string
+  sender: string
+  senderUsername: string
+  timestamp: Date
+  type: "text" | "file" | "voice"
+  fileName?: string
+  fileUrl?: string
+  chatType: "main" | "dm" | "forum"
+  dmRecipient?: string
+  voiceUrl?: string
+  voiceDuration?: number
+}
+
+interface User {
+  id: string
+  username: string
+  displayName: string
+  email: string
+  bio: string
+  avatar: string
+  color: string
+  isOnline: boolean
+  lastSeen: string
+  role: "user" | "vip" | "admin"
+  prefix: string
+  friends: string[]
+  friendRequests: string[]
+  joinedAt: string
+  timeoutUntil?: string
+  timeoutReason?: string
+}
+
+type ConnectionStatus = "connected" | "disconnected" | "connecting"
+
+interface Auth {
+  isAuthenticated: boolean
+  currentUser: User | null
+  isLoading: boolean
+}
+
+// Helpers
+const canUserSendMessages = (user: User | null): boolean => {
+  if (!user) return false
+  if (user.timeoutUntil && new Date(user.timeoutUntil) > new Date()) return false
+  return true
+}
+
+export default function Chat() {
+  // State
+  const [messages, setMessages] = useState<Message[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected")
+  const [currentMessage, setCurrentMessage] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [chatType, setChatType] = useState<"main" | "dm" | "forum">("main")
+  const [selectedDmUser, setSelectedDmUser] = useState<string | null>(null)
+  const [dmConversations, setDmConversations] = useState<string[]>([])
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+
+  // Refs
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<BlobPart[]>([])
+
+  // Mock auth state for development
+  const auth = { isAuthenticated: true, currentUser: users[0], isLoading: false }
+
+  // Load chat data from localStorage
+  const loadData = useCallback(() => {
+    if (!auth.isAuthenticated) {
+      setConnectionStatus("disconnected")
+      return
+    }
+
+    try {
+      const storedData = localStorage.getItem("chatData")
+      if (storedData) {
+        const data = JSON.parse(storedData)
+        const parsedMessages = data.messages || []
+        
+        setMessages(parsedMessages.map((m: Message) => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+        })))
+        setUsers(data.users || [])
+        setConnectionStatus(data.connectionStatus || "disconnected")
+      }
+    } catch (error) {
+      console.error("Error loading data from localStorage:", error)
+      setConnectionStatus("disconnected")
+    }
+  }, [auth.isAuthenticated])
+
+  // Load data periodically when authenticated
+  useEffect(() => {
+    if (auth.isAuthenticated) {
+      loadData()
+      const interval = setInterval(loadData, 3000) // Sync every 3 seconds
+      return () => clearInterval(interval)
+    }
+  }, [auth.isAuthenticated, loadData])
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages])
+
+  // Voice recording
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data)
+      }
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
+        const audioUrl = URL.createObjectURL(audioBlob)
+        sendVoiceMessage(audioUrl, recordingTime)
+      }
+
+      mediaRecorder.start()
+      setIsRecording(true)
+
+      const startTime = Date.now()
+      const timer = setInterval(() => {
+        setRecordingTime(Math.floor((Date.now() - startTime) / 1000))
+      }, 1000)
+
+      return () => {
+        clearInterval(timer)
+      }
+    } catch (error) {
+      console.error("Error starting recording:", error)
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      setRecordingTime(0)
+    }
+  }
+
+  // Send voice message
+  const sendVoiceMessage = (voiceUrl: string, duration: number) => {
+    const newMessage: Message = {
+      id: crypto.randomUUID(),
+      text: "",
+      sender: auth.currentUser?.id || "",
+      senderUsername: auth.currentUser?.username || "Anonymous",
+      timestamp: new Date(),
+      type: "voice",
+      chatType,
+      dmRecipient: chatType === "dm" ? selectedDmUser : undefined,
+      voiceUrl,
+      voiceDuration: duration
+    }
+
+    try {
+      setMessages(prev => [...prev, newMessage])
+      const storedData = localStorage.getItem("chatData")
+      const data = storedData ? JSON.parse(storedData) : { messages: [] }
+      data.messages = [...data.messages, newMessage]
+      localStorage.setItem("chatData", JSON.stringify(data))
+    } catch (error) {
+      console.error("Error sending voice message:", error)
+    }
+  }
+
+  // Send text/file message
+  const sendMessage = () => {
+    if (!currentMessage.trim() && !selectedFile) return
+    if (!canUserSendMessages(auth.currentUser)) return
+
+    const newMessage: Message = {
+      id: crypto.randomUUID(),
+      text: currentMessage,
+      sender: auth.currentUser?.id || "",
+      senderUsername: auth.currentUser?.username || "Anonymous",
+      timestamp: new Date(),
+      type: selectedFile ? "file" : "text",
+      fileName: selectedFile?.name,
+      fileUrl: selectedFile ? URL.createObjectURL(selectedFile) : undefined,
+      chatType,
+      dmRecipient: chatType === "dm" ? selectedDmUser : undefined,
+    }
+
+    try {
+      setMessages(prev => [...prev, newMessage])
+      const storedData = localStorage.getItem("chatData")
+      const data = storedData ? JSON.parse(storedData) : { messages: [] }
+      data.messages = [...data.messages, newMessage]
+      localStorage.setItem("chatData", JSON.stringify(data))
+    } catch (error) {
+      console.error("Error sending message:", error)
+    }
+
+    setCurrentMessage("")
+    setSelectedFile(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-screen">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={messagesEndRef}>
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={`flex ${
+              message.sender === auth.currentUser?.id ? "justify-end" : "justify-start"
+            }`}
+          >
+            <Card className="max-w-[70%] p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <Avatar>
+                  <AvatarFallback>
+                    {message.senderUsername.charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <div className="font-semibold">{message.senderUsername}</div>
+                  <div className="text-xs text-gray-500">
+                    {message.timestamp.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+              {message.type === "text" && (
+                <p className="text-sm">{message.text}</p>
+              )}
+              {message.type === "file" && message.fileUrl && (
+                <div className="space-y-2">
+                  <p className="text-sm">{message.fileName}</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => window.open(message.fileUrl)}
+                  >
+                    Download File
+                  </Button>
+                </div>
+              )}
+              {message.type === "voice" && message.voiceUrl && (
+                <div className="space-y-2">
+                  <audio controls src={message.voiceUrl} />
+                  <div className="text-xs text-gray-500">
+                    {message.voiceDuration}s
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+        ))}
+      </div>
+      <div className="p-4 border-t">
+        <div className="flex gap-2">
+          <input
+            type="file"
+            className="hidden"
+            ref={fileInputRef}
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) {
+                setSelectedFile(file)
+              }
+            }}
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎
+          </Button>
+          <Input
+            placeholder={
+              !canUserSendMessages(auth.currentUser)
+                ? "You are timed out"
+                : "Type your message..."
+            }
+            value={currentMessage}
+            onChange={(e) => setCurrentMessage(e.target.value)}
+            disabled={!canUserSendMessages(auth.currentUser) || isRecording}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault()
+                sendMessage()
+              }
+            }}
+          />
+          {isRecording ? (
+            <Button
+              variant="outline"
+              onClick={stopRecording}
+              className="whitespace-nowrap"
+            >
+              Stop Recording ({recordingTime}s)
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={startRecording}
+              disabled={!canUserSendMessages(auth.currentUser)}
+            >
+              🎤
+            </Button>
+          )}
+          <Button
+            onClick={sendMessage}
+            disabled={
+              (!currentMessage.trim() && !selectedFile) ||
+              !canUserSendMessages(auth.currentUser) ||
+              isRecording
+            }
+          >
+            Send
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default Chat
+  // State
+  const [messages, setMessages] = useState<Message[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected")
+  const [currentMessage, setCurrentMessage] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [chatType, setChatType] = useState<"main" | "dm" | "forum">("main")
+  const [selectedDmUser, setSelectedDmUser] = useState<string | null>(null)
+  const [dmConversations, setDmConversations] = useState<string[]>([])
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+
+  // Refs
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<BlobPart[]>([])
+
+  // Mock auth state
+  const auth = { isAuthenticated: true, currentUser: users[0], isLoading: false }
+
+  // Load chat data from localStorage
+  const loadData = useCallback(() => {
+    if (!auth.isAuthenticated) {
+      setConnectionStatus("disconnected")
+      return
+    }
+
+    try {
+      const storedData = localStorage.getItem("chatData")
+      if (storedData) {
+        const data = JSON.parse(storedData)
+        const parsedMessages = data.messages || []
+        
+        setMessages(parsedMessages.map((m: Message) => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+        })))
+        setUsers(data.users || [])
+        setConnectionStatus(data.connectionStatus || "disconnected")
+      }
+    } catch (error) {
+      console.error("Error loading data from localStorage:", error)
+      setConnectionStatus("disconnected")
+    }
+  }, [auth.isAuthenticated])
+
+  // Load data periodically when authenticated
+  useEffect(() => {
+    if (auth.isAuthenticated) {
+      loadData()
+      const interval = setInterval(loadData, 3000) // Sync every 3 seconds
+      return () => clearInterval(interval)
+    }
+  }, [auth.isAuthenticated, loadData])
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages])
+
+  // Voice recording
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data)
+      }
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
+        const audioUrl = URL.createObjectURL(audioBlob)
+        sendVoiceMessage(audioUrl, recordingTime)
+      }
+
+      mediaRecorder.start()
+      setIsRecording(true)
+
+      const startTime = Date.now()
+      const timer = setInterval(() => {
+        setRecordingTime(Math.floor((Date.now() - startTime) / 1000))
+      }, 1000)
+
+      return () => {
+        clearInterval(timer)
+      }
+    } catch (error) {
+      console.error("Error starting recording:", error)
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      setRecordingTime(0)
+    }
+  }
+
+  const sendVoiceMessage = (voiceUrl: string, duration: number) => {
+    const newMessage: Message = {
+      id: crypto.randomUUID(),
+      text: "",
+      sender: auth.currentUser?.id || "",
+      senderUsername: auth.currentUser?.username || "Anonymous",
+      timestamp: new Date(),
+      type: "voice",
+      chatType,
+      dmRecipient: chatType === "dm" ? selectedDmUser : undefined,
+      voiceUrl,
+      voiceDuration: duration
+    }
+
+    try {
+      setMessages(prev => [...prev, newMessage])
+      const storedData = localStorage.getItem("chatData")
+      const data = storedData ? JSON.parse(storedData) : { messages: [] }
+      data.messages = [...data.messages, newMessage]
+      localStorage.setItem("chatData", JSON.stringify(data))
+    } catch (error) {
+      console.error("Error sending voice message:", error)
+    }
+  }
+  const [messages, setMessages] = useState<Message[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected")
+  const [currentMessage, setCurrentMessage] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [chatType, setChatType] = useState<"main" | "dm" | "forum">("main")
+  const [selectedDmUser, setSelectedDmUser] = useState<string | null>(null)
+  const [dmConversations, setDmConversations] = useState<string[]>([])
+  
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const auth = { isAuthenticated: true, currentUser: users[0] } // Temporary auth mock
+
+  const loadData = useCallback(() => {
+    if (!auth.isAuthenticated) {
+      setConnectionStatus("disconnected")
+      return
+    }
+
+    try {
+      const storedData = localStorage.getItem("chatData")
+      if (storedData) {
+        const data = JSON.parse(storedData)
+        setMessages(data.messages || [])
+        setUsers(data.users || [])
+        setConnectionStatus(data.connectionStatus || "disconnected")
+      }
+    } catch (error) {
+      console.error("Error loading data from localStorage:", error)
+    }
+  }, [auth.isAuthenticated])
+
+  useEffect(() => {
+    if (auth.isAuthenticated) {
+      loadData()
+      const interval = setInterval(loadData, 3000) // Sync every 3 seconds
+      return () => clearInterval(interval)
+    }
+  }, [auth.isAuthenticated, loadData])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages])
+
+  return <div>Chat Component</div>
+}
+
+// Polyfill for crypto.randomUUID for browsers that don't support it
+function uuidv4() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8)
+    return v.toString(16)
+  })
+}
+
+// Types
+type ConnectionStatus = "connected" | "disconnected" | "connecting"
+
+interface Message {
+  id: string
+  text: string
+  sender: string
+  senderUsername: string
+  timestamp: Date
+  type: "text" | "file" | "voice"
+  fileName?: string
+  fileUrl?: string
+  chatType: "main" | "dm" | "forum"
+  dmRecipient?: string
+  voiceUrl?: string
+  voiceDuration?: number
+}
+
+// Interfaces
+interface Message {
+  id: string
+  text: string
+  sender: string
+  senderUsername: string
+  timestamp: Date
+  type: "text" | "file" | "voice"
+  fileName?: string
+  fileUrl?: string
+  chatType: "main" | "dm" | "forum"
+  dmRecipient?: string
+  voiceUrl?: string
+  voiceDuration?: number
+}
+
+interface User {
+  id: string
+  username: string
+  displayName: string
+  email: string
+  bio: string
+  avatar: string
+  color: string
+  isOnline: boolean
+  lastSeen: string
+  role: "user" | "vip" | "admin"
+  prefix: string
+  friends: string[]
+  friendRequests: string[]
+  joinedAt: string
+  timeoutUntil?: string
+  timeoutReason?: string
+}
+
+type ConnectionStatus = "connected" | "disconnected" | "connecting"
+
+interface Auth {
+  isAuthenticated: boolean
+  currentUser: User | null
+  isLoading: boolean
+}
+
+const canUserSendMessages = (user: User | null): boolean => {
+  if (!user) return false
+  if (user.timeoutUntil && new Date(user.timeoutUntil) > new Date()) return false
+  return true
+}
+
+interface ChatComponentProps {}
+
+// Chat Component
+export default function Chat() {
+  // State
+  const [messages, setMessages] = useState<Message[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected")
+  const [currentMessage, setCurrentMessage] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [chatType, setChatType] = useState<"main" | "dm" | "forum">("main")
+  const [selectedDmUser, setSelectedDmUser] = useState<string | null>(null)
+  const [dmConversations, setDmConversations] = useState<string[]>([])
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+
+  // Refs
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<BlobPart[]>([])
+  
+  // Mock auth
+  const auth = { isAuthenticated: true, currentUser: users[0] }
+
+  // Load chat data from localStorage
+  const loadData = useCallback(() => {
+    if (!auth.isAuthenticated) {
+      setConnectionStatus("disconnected")
+      return
+    }
+
+    try {
+      const storedData = localStorage.getItem("chatData")
+      if (storedData) {
+        const data = JSON.parse(storedData)
+        const parsedMessages = data.messages || []
+        
+        setMessages(parsedMessages.map((m: Message) => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+        })))
+        setUsers(data.users || [])
+        setConnectionStatus(data.connectionStatus || "disconnected")
+      }
+    } catch (error) {
+      console.error("Error loading data from localStorage:", error)
+      setConnectionStatus("disconnected")
+    }
+  }, [auth.isAuthenticated])
+
+  // Load data periodically when authenticated
+  useEffect(() => {
+    if (auth.isAuthenticated) {
+      loadData()
+      const interval = setInterval(loadData, 3000) // Sync every 3 seconds
+      return () => clearInterval(interval)
+    }
+  }, [auth.isAuthenticated, loadData])
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages])
 import {
   Send,
   Paperclip,
@@ -159,7 +781,7 @@ const getFromLocalStorage = (key: string, defaultValue: any = null) => {
   }
 }
 
-export default function ChatApp() {
+function ChatApp() {
   // Initialize state
   const [auth, setAuth] = useState<AuthState>({
     isAuthenticated: false,
@@ -791,82 +1413,63 @@ export default function ChatApp() {
       return
     }
 
+export default function ChatComponent() {
+  // State
+  const [messages, setMessages] = useState<Message[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected")
+  const [currentMessage, setCurrentMessage] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [chatType, setChatType] = useState<"main" | "dm" | "forum">("main")
+  const [selectedDmUser, setSelectedDmUser] = useState<string | null>(null)
+  const [dmConversations, setDmConversations] = useState<string[]>([])
+  const [isRecording, setIsRecording] = useState(false)
+
+  // Refs
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<BlobPart[]>([])
+  
+  // Mock auth
+  const auth = { isAuthenticated: true, currentUser: users[0] }
+
+  // Load chat data from localStorage
+  const loadData = useCallback(() => {
+    if (!auth.isAuthenticated) {
+      setConnectionStatus("disconnected")
+      return
+    }
+
     try {
       const storedData = localStorage.getItem("chatData")
       if (storedData) {
         const data = JSON.parse(storedData)
-        setMessages(data.messages || [])
+        const parsedMessages = data.messages || []
+        
+        setMessages(parsedMessages.map((m: Message) => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+        })))
         setUsers(data.users || [])
         setConnectionStatus(data.connectionStatus || "disconnected")
       }
     } catch (error) {
       console.error("Error loading data from localStorage:", error)
-    }    try {
-      setConnectionStatus("connecting");
-      
-      // Load users
-      const savedUsers = localStorage.getItem("users");
-      const users = savedUsers ? JSON.parse(savedUsers) : [];
-      setUsers(users);
-      
-      // Load messages
-      const savedMessages = localStorage.getItem("messages");
-      const messages = savedMessages ? JSON.parse(savedMessages) : [];
-      setMessages(messages.map((m: any) => ({
-        ...m,
-        timestamp: new Date(m.timestamp)
-      })));
-      
-      // Load forum posts
-      const savedPosts = localStorage.getItem("forumPosts");
-      const posts = savedPosts ? JSON.parse(savedPosts) : [];
-      setForumPosts(posts.map((p: any) => ({
-        ...p,
-        timestamp: new Date(p.timestamp),
-        replies: p.replies.map((r: any) => ({
-          ...r,
-          timestamp: new Date(r.timestamp)
-        }))
-      })));
-      
-      setConnectionStatus("connected");
-    } catch (error) {
-      console.error("Error loading data:", error);
-      setConnectionStatus("disconnected");
+      setConnectionStatus("disconnected")
     }
-  }, [auth.isAuthenticated]);
+  }, [auth.isAuthenticated])
 
+  // Load data periodically when authenticated
   useEffect(() => {
-    loadLocalData();
-    const interval = setInterval(loadLocalData, 3000); // Sync every 3 seconds
-    return () => clearInterval(interval);
-  }, [loadLocalData]);
-
-        setUsers(allUsers)
-        setMessages(
-          allMessages.map((m: any) => ({
-            ...m,
-            timestamp: new Date(m.timestamp),
-          })),
-        )
-        setForumPosts(
-          allForumPosts.map((p: any) => ({
-            ...p,
-            timestamp: new Date(p.timestamp),
-            replies: p.replies.map((r: any) => ({
-              ...r,
-              timestamp: new Date(r.timestamp),
-            })),
-          })),
-        )
-      }
-
+    if (auth.isAuthenticated) {
       loadData()
       const interval = setInterval(loadData, 3000) // Sync every 3 seconds
       return () => clearInterval(interval)
     }
-  }, [auth.isAuthenticated])
+  }, [auth.isAuthenticated, loadData])
 
+  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
@@ -986,28 +1589,33 @@ export default function ChatApp() {
         dmRecipient: chatType === "dm" && selectedDmUser ? selectedDmUser : undefined,
         voiceUrl: undefined,
         voiceDuration: undefined,
-      }    try {
-      const existingMessages = JSON.parse(localStorage.getItem("messages") || "[]")
-      const updatedMessages = [...existingMessages, newMessage]
-      localStorage.setItem("messages", JSON.stringify(updatedMessages))
+      }
+      
+      try {
+        const existingMessages = JSON.parse(localStorage.getItem("messages") || "[]")
+        const updatedMessages = [...existingMessages, newMessage]
+        localStorage.setItem("messages", JSON.stringify(updatedMessages))
 
-      setMessages((prev) => [...prev, newMessage])
+        setMessages((prev) => [...prev, newMessage])
 
-      if (chatType === "dm" && selectedDmUser && !dmConversations.includes(selectedDmUser)) {
-        setDmConversations((prev) => [...prev, selectedDmUser])
+        if (chatType === "dm" && selectedDmUser && !dmConversations.includes(selectedDmUser)) {
+          setDmConversations((prev) => [...prev, selectedDmUser])
+        }
+      } catch (error) {
+        console.error("Failed to send message:", error)
+      }
+
+      setCurrentMessage("")
+      setSelectedFile(null)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ""
       }
     } catch (error) {
-      console.error("Failed to send message:", error)
-    }
-
-    setCurrentMessage("")
-    setSelectedFile(null)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ""
+      console.error("Failed to process message:", error)
     }
   }
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (file) {
       // Convert file to local URL and store in localStorage
