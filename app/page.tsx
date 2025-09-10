@@ -160,11 +160,33 @@ const getFromLocalStorage = (key: string, defaultValue: any = null) => {
 }
 
 export default function ChatApp() {
+  // Initialize state
   const [auth, setAuth] = useState<AuthState>({
     isAuthenticated: false,
     currentUser: null,
     isLoading: true,
   })
+
+  // Safe local storage interactions
+  const safeGetItem = useCallback(<T,>(key: string, defaultValue: T): T => {
+    try {
+      const item = localStorage.getItem(key)
+      return item ? JSON.parse(item) : defaultValue
+    } catch (error) {
+      console.error(`Error reading ${key} from localStorage:`, error)
+      return defaultValue
+    }
+  }, [])
+
+  const safeSetItem = useCallback((key: string, value: any): boolean => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value))
+      return true
+    } catch (error) {
+      console.error(`Error saving ${key} to localStorage:`, error)
+      return false
+    }
+  }, [])
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [authMode, setAuthMode] = useState<"login" | "register">("login")
   const [authForm, setAuthForm] = useState({
@@ -762,14 +784,24 @@ export default function ChatApp() {
     return () => window.removeEventListener("resize", checkMobile)
   }, [])
 
-  // Load data from localStorage
-  const loadLocalData = useCallback(() => {
+  // Load data from local storage
+  const loadData = useCallback(() => {
     if (!auth.isAuthenticated) {
-      setConnectionStatus("disconnected");
-      return;
+      setConnectionStatus("disconnected")
+      return
     }
-    
+
     try {
+      const storedData = localStorage.getItem("chatData")
+      if (storedData) {
+        const data = JSON.parse(storedData)
+        setMessages(data.messages || [])
+        setUsers(data.users || [])
+        setConnectionStatus(data.connectionStatus || "disconnected")
+      }
+    } catch (error) {
+      console.error("Error loading data from localStorage:", error)
+    }    try {
       setConnectionStatus("connecting");
       
       // Load users
