@@ -1,5 +1,8 @@
 "use client"
 
+import type React from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
+
 // Polyfill for crypto.randomUUID for browsers that don't support it
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -8,7 +11,26 @@ function uuidv4() {
   })
 }
 
-import type React from "react"
+// Helper functions for local storage
+const saveToLocalStorage = (key: string, data: any) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+    return true
+  } catch (error) {
+    console.error(`Error saving to localStorage (${key}):`, error)
+    return false
+  }
+}
+
+const getFromLocalStorage = (key: string, defaultValue: any = null) => {
+  try {
+    const item = localStorage.getItem(key)
+    return item ? JSON.parse(item) : defaultValue
+  } catch (error) {
+    console.error(`Error reading from localStorage (${key}):`, error)
+    return defaultValue
+  }
+}
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -115,6 +137,26 @@ interface Theme {
   cardForeground: string
   sidebar: string
   sidebarForeground: string
+}
+
+const saveToLocalStorage = (key: string, data: any) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+    return true
+  } catch (error) {
+    console.error(`Error saving to localStorage (${key}):`, error)
+    return false
+  }
+}
+
+const getFromLocalStorage = (key: string, defaultValue: any = null) => {
+  try {
+    const item = localStorage.getItem(key)
+    return item ? JSON.parse(item) : defaultValue
+  } catch (error) {
+    console.error(`Error reading from localStorage (${key}):`, error)
+    return defaultValue
+  }
 }
 
 export default function ChatApp() {
@@ -678,22 +720,33 @@ export default function ChatApp() {
 
   useEffect(() => {
     const checkAuth = () => {
-      const savedUser = localStorage.getItem("currentUser")
-      if (savedUser) {
-        const user = JSON.parse(savedUser)
-        setAuth({
-          isAuthenticated: true,
-          currentUser: user,
-          isLoading: false,
-        })
-        setConnectionStatus("connected")
-      } else {
+      try {
+        const savedUser = localStorage.getItem("currentUser")
+        if (savedUser) {
+          const user = JSON.parse(savedUser)
+          setAuth({
+            isAuthenticated: true,
+            currentUser: user,
+            isLoading: false,
+          })
+          setConnectionStatus("connected")
+        } else {
+          setAuth({
+            isAuthenticated: false,
+            currentUser: null,
+            isLoading: false,
+          })
+          setConnectionStatus("disconnected")
+          setShowAuthModal(true)
+        }
+      } catch (error) {
+        console.error("Error checking auth:", error)
+        setConnectionStatus("disconnected")
         setAuth({
           isAuthenticated: false,
           currentUser: null,
           isLoading: false,
         })
-        setShowAuthModal(true)
       }
     }
 
@@ -709,12 +762,53 @@ export default function ChatApp() {
     return () => window.removeEventListener("resize", checkMobile)
   }, [])
 
+  // Load data from localStorage
+  const loadLocalData = useCallback(() => {
+    if (!auth.isAuthenticated) {
+      setConnectionStatus("disconnected");
+      return;
+    }
+    
+    try {
+      setConnectionStatus("connecting");
+      
+      // Load users
+      const savedUsers = localStorage.getItem("users");
+      const users = savedUsers ? JSON.parse(savedUsers) : [];
+      setUsers(users);
+      
+      // Load messages
+      const savedMessages = localStorage.getItem("messages");
+      const messages = savedMessages ? JSON.parse(savedMessages) : [];
+      setMessages(messages.map((m: any) => ({
+        ...m,
+        timestamp: new Date(m.timestamp)
+      })));
+      
+      // Load forum posts
+      const savedPosts = localStorage.getItem("forumPosts");
+      const posts = savedPosts ? JSON.parse(savedPosts) : [];
+      setForumPosts(posts.map((p: any) => ({
+        ...p,
+        timestamp: new Date(p.timestamp),
+        replies: p.replies.map((r: any) => ({
+          ...r,
+          timestamp: new Date(r.timestamp)
+        }))
+      })));
+      
+      setConnectionStatus("connected");
+    } catch (error) {
+      console.error("Error loading data:", error);
+      setConnectionStatus("disconnected");
+    }
+  }, [auth.isAuthenticated]);
+
   useEffect(() => {
-    if (auth.isAuthenticated) {
-      const loadData = () => {
-        const allUsers = JSON.parse(localStorage.getItem("users") || "[]")
-        const allMessages = JSON.parse(localStorage.getItem("messages") || "[]")
-        const allForumPosts = JSON.parse(localStorage.getItem("forumPosts") || "[]")
+    loadLocalData();
+    const interval = setInterval(loadLocalData, 3000); // Sync every 3 seconds
+    return () => clearInterval(interval);
+  }, [loadLocalData]);
 
         setUsers(allUsers)
         setMessages(
@@ -837,22 +931,30 @@ export default function ChatApp() {
       return
     }
 
-    const newMessage: Message = {
-      id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : uuidv4(),
-      text: selectedFile ? `Shared file: ${selectedFile.name}` : currentMessage,
-      sender: auth.currentUser.displayName,
-      senderUsername: auth.currentUser.username,
-      timestamp: new Date(),
-      type: selectedFile ? "file" : "text",
-      fileName: selectedFile?.name,
-      fileUrl: selectedFile ? URL.createObjectURL(selectedFile) : undefined,
-      chatType: chatType,
-  dmRecipient: chatType === "dm" && selectedDmUser ? selectedDmUser : undefined,
-      voiceUrl: undefined,
-      voiceDuration: undefined,
-    }
-
     try {
+      let fileUrl
+      if (selectedFile) {
+        const reader = new FileReader()
+        fileUrl = await new Promise((resolve) => {
+          reader.onload = (e) => resolve(e.target?.result)
+          reader.readAsDataURL(selectedFile)
+        })
+      }
+
+      const newMessage: Message = {
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : uuidv4(),
+        text: selectedFile ? `Shared file: ${selectedFile.name}` : currentMessage,
+        sender: auth.currentUser.displayName,
+        senderUsername: auth.currentUser.username,
+        timestamp: new Date(),
+        type: selectedFile ? "file" : "text",
+        fileName: selectedFile?.name,
+        fileUrl: fileUrl as string,
+        chatType: chatType,
+        dmRecipient: chatType === "dm" && selectedDmUser ? selectedDmUser : undefined,
+        voiceUrl: undefined,
+        voiceDuration: undefined,
+      }    try {
       const existingMessages = JSON.parse(localStorage.getItem("messages") || "[]")
       const updatedMessages = [...existingMessages, newMessage]
       localStorage.setItem("messages", JSON.stringify(updatedMessages))
@@ -876,7 +978,22 @@ export default function ChatApp() {
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (file) {
-      setSelectedFile(file)
+      // Convert file to local URL and store in localStorage
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const fileData = {
+          name: file.name,
+          type: file.type,
+          data: e.target?.result
+        }
+        // Store file metadata in localStorage
+        const files = JSON.parse(localStorage.getItem("chatFiles") || "[]")
+        files.push(fileData)
+        localStorage.setItem("chatFiles", JSON.stringify(files))
+        
+        setSelectedFile(new File([file], file.name, { type: file.type }))
+      }
+      reader.readAsDataURL(file)
     }
   }
 
