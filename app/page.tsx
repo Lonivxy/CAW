@@ -5,6 +5,9 @@ import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
+
+// WebSocket connection state
+let ws: WebSocket | null = null;
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
@@ -124,6 +127,49 @@ export default function ChatApp() {
     displayName: "",
     bio: "",
   })
+
+  useEffect(() => {
+    // 创建 WebSocket 连接
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = window.location.hostname;
+    const wsPort = '3001';
+    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}`;
+    
+    console.log('Connecting to WebSocket server at:', wsUrl);
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('Connected to WebSocket server');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'history') {
+          setMessages(data.messages);
+        } else if (data.type === 'message') {
+          setMessages(prev => [...prev, data.data]);
+        }
+      } catch (error) {
+        console.error('Error processing WebSocket message:', error);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    ws.onclose = () => {
+      console.log('Disconnected from WebSocket server');
+    };
+
+    // Cleanup on unmount
+    return () => {
+      if (ws) {
+        ws.close();
+      }
+    };
+  }, []);
 
   const [messages, setMessages] = useState<Message[]>([])
   const [currentMessage, setCurrentMessage] = useState("")
@@ -849,6 +895,12 @@ export default function ChatApp() {
     }
 
     try {
+      // Send message through WebSocket
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(newMessage));
+      }
+
+      // Keep local storage for backup
       const existingMessages = JSON.parse(localStorage.getItem("messages") || "[]")
       const updatedMessages = [...existingMessages, newMessage]
       localStorage.setItem("messages", JSON.stringify(updatedMessages))
