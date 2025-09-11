@@ -211,7 +211,7 @@ export default function ChatApp() {
   const register = async () => {
     try {
       const newUser: AuthUser = {
-        id: crypto.randomUUID(),
+        id: `user-${Date.now()}-${authForm.username}`,
         username: authForm.username,
         displayName: authForm.displayName || authForm.username,
         email: authForm.email,
@@ -549,7 +549,7 @@ export default function ChatApp() {
     }
 
     const newPost: ForumPost = {
-      id: crypto.randomUUID(),
+      id: `post-${Date.now()}-${auth.currentUser.username}`,
       title: createPostForm.title,
       content: createPostForm.content,
       author: auth.currentUser.displayName,
@@ -582,7 +582,7 @@ export default function ChatApp() {
     }
 
     const newReply: ForumReply = {
-      id: crypto.randomUUID(),
+      id: `reply-${Date.now()}-${auth.currentUser.username}`,
       content: replyContent,
       author: auth.currentUser.displayName,
       authorUsername: auth.currentUser.username,
@@ -798,7 +798,7 @@ export default function ChatApp() {
     }
 
     const newMessage: Message = {
-      id: crypto.randomUUID(),
+      id: `voice-${Date.now()}-${auth.currentUser.username}`,
       text: `Voice message (${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, "0")})`,
       sender: auth.currentUser.displayName,
       senderUsername: auth.currentUser.username,
@@ -834,7 +834,7 @@ export default function ChatApp() {
     }
 
     const newMessage: Message = {
-      id: crypto.randomUUID(),
+      id: `msg-${Date.now()}-${auth.currentUser.username}`,
       text: selectedFile ? `Shared file: ${selectedFile.name}` : currentMessage,
       sender: auth.currentUser.displayName,
       senderUsername: auth.currentUser.username,
