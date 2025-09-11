@@ -1,7 +1,7 @@
 {
   "name": "caw",
-  "version": "v21",
-  "private": true,
+  "version": "v22",
+  "private": false,
   "scripts": {
     "build": "next build",
     "dev": "next dev --hostname 0.0.0.0",
